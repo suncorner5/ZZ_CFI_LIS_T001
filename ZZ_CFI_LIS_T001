@@ -804,15 +804,10 @@ data: fieldlist_afvc type standard table of kkblo_fieldcat. "PBSW180803
 
  
 
-data: generatedprog(8) type c.
 
-data: generatedprog_konv(8) type c.
 
-data: generatedprog_vbpa(8) type c.
 
-data: generatedprog_afvc(8) type c.                         "PBSW180803
 
-data: generatedprog_bset(8) type c.                         "PBSC030810
 
 data: st_report like trdir-name .                           "PBSC030810
 
@@ -849,6 +844,8 @@ data: outline(10000) type c.                                "PBSC160316
  
 
 data: success type c. "PBSY
+
+data: g_field_separator type c length 1.
 
 * Exportstatistik
 
@@ -3100,6 +3097,164 @@ form writeoutputheader using fieldlist type standard table extension.
 
 endform.
 
+********************************************************************
+*  FORM: set_correct_tab_value                                    *
+********************************************************************
+form set_correct_tab_value.
+
+  class cl_abap_char_utilities definition load.
+  select single wert from /pbs/cfi_custom into g_field_separator
+    where repid eq '/PBS/CFI_LIS_INC'
+    and reportparameter eq 'FIELD_DELIMITER'.
+  if g_field_separator is initial.
+    g_field_separator = cl_abap_char_utilities=>horizontal_tab.
+  endif.
+
+endform.
+
+********************************************************************
+*  FORM: apply_anonymization_xtab                                  *
+********************************************************************
+form apply_anonymization_xtab using xtabline like xtab.
+
+  data: ano_first type char1.
+  data: bl_tab type dd02l-tabname value '/PBS/CFI_BL'.
+  data: i_tab_cfi_bl type table of /pbs/cfi_bl.
+  data: i_lin_cfi_bl like line of i_tab_cfi_bl.
+  data: reftab like dd02l-tabname.
+  data: field_type type char1.
+  data: field_length type i.
+  data: pa_tab type string.
+  data: r_name  type trdir-name.
+  data: source_line type char72.
+  data: anonymous type char1.
+  data: replace_char type char1.
+  data: source type standard table of char72 with default key.
+
+  field-symbols: <gr_line> type any.
+  field-symbols: <feld> type simple.
+
+  anonymous = /PBS/CFI_CL_AN=>set_anonymous_extr.
+  if anonymous is initial.
+    return.
+  endif.
+
+  class /PBS/CFI_CL_AN definition load.
+  ano_first = /PBS/CFI_CL_AN=>set_first.
+  if ano_first eq space.
+    /PBS/CFI_CL_AN=>set_first = 'X'.
+    if sy-cprog eq '/PBS/CFI_LIS_REFERENCE'.
+      concatenate sy-cprog '_INIT' into r_name.
+      read report r_name into source.
+      loop at source into source_line where line cs 'REFTAB'.
+        exit.
+      endloop.
+      replace 'REFTAB' with space into source_line.
+      replace '=' with space into source_line.
+      condense source_line no-gaps.
+      write source_line(1) to replace_char.
+      replace all occurrences of replace_char in source_line with space.
+      replace all occurrences of '.' in source_line with space.
+      write source_line to reftab.
+      select * from (bl_tab) into corresponding fields of table i_tab_cfi_bl
+        where tabellenname eq reftab.
+    else.
+      select tabellenname from /PBS/CFI_BL_STRU into pa_tab where name eq sy-cprog.
+        select * from (bl_tab) into corresponding fields of table i_tab_cfi_bl
+          where tabellenname eq pa_tab.
+      endselect.
+    endif.
+    /PBS/CFI_CL_AN=>set_bl_table = i_tab_cfi_bl.
+  else.
+    i_tab_cfi_bl = /PBS/CFI_CL_AN=>set_bl_table.
+  endif.
+
+  assign xtabline to <gr_line>.
+  loop at i_tab_cfi_bl into i_lin_cfi_bl.
+    assign component i_lin_cfi_bl-feldname of structure <gr_line> to <feld>.
+    if sy-subrc <> 0.
+      continue.
+    endif.
+    clear <feld>.
+    describe field <feld> type field_type.
+    case field_type.
+      when 'C'.
+        describe field <feld> length field_length in character mode.
+        translate <feld> using ' X'.
+      when others.
+        clear <feld>.
+    endcase.
+  endloop.
+
+endform.
+
+********************************************************************
+*  FORM: genXTABLine                                               *
+********************************************************************
+form genxtabline using xtabline like xtab outline.
+
+  data: line type kkblo_fieldcat.
+  data: outlength type i.
+  data: outline_string type string.
+  data: out_ref type ref to data.
+  data: date_val type d.
+
+  field-symbols: <value> type any.
+  field-symbols: <out> type any.
+
+  clear outline_string.
+
+  if g_field_separator is initial.
+    perform set_correct_tab_value.
+  endif.
+
+  perform apply_anonymization_xtab using xtabline.
+
+  loop at fieldlist into line.
+    outlength = line-ddic_outputlen.
+    if outlength is initial or outlength = 0.
+      continue.
+    endif.
+    if line-inttype = 'D'.
+      outlength = 10.
+    elseif line-inttype = 'T'.
+      outlength = 8.
+    endif.
+    create data out_ref type c length outlength.
+    assign out_ref->* to <out>.
+    clear <out>.
+    assign component line-fieldname of structure xtabline to <value>.
+    if sy-subrc <> 0.
+      continue.
+    endif.
+    case line-inttype.
+      when 'D'.
+        if x_bw is initial and <value> is not initial.
+          date_val = <value>.
+          <out>+0(2) = date_val+6(2).
+          <out>+2(1) = '.'.
+          <out>+3(2) = date_val+4(2).
+          <out>+5(1) = '.'.
+          <out>+6(4) = date_val+0(4).
+        else.
+          <out> = <value>.
+        endif.
+      when 'T'.
+        <out> = <value>.
+      when others.
+        <out> = <value>.
+    endcase.
+    if outline_string is initial.
+      outline_string = <out>.
+    else.
+      concatenate outline_string g_field_separator <out> into outline_string.
+    endif.
+  endloop.
+
+  outline = outline_string.
+
+endform.
+
  
 
 ********************************************************************
@@ -3374,7 +3529,7 @@ form verify_file_size.
 
     perform writeoutputheader using fieldlist[] '  '.
 
-    perform set_correct_tab_value in program (generatedprog).
+    perform set_correct_tab_value.
 
  
 
@@ -5510,65 +5665,7 @@ endform.
 
 form generateexternals_xtab using fieldlist type standard table.
 
- 
-
- 
-
- 
-
   perform get_anonymous_values.                             "PBSW250719
-
- 
-
-* Programm-Header
-
-  append 'PROGRAM SUBPOOL.' to listing.
-
-  append 'FIELD-SYMBOLS: <TypeFieldSymbol> TYPE ANY.' to listing.
-
-* Anfang                                                  "PBSW231003
-
-*  APPEND 'INCLUDE /PBS/CFI_LIS_REFERENCE_STRU.' TO LISTING.
-
-  append incl_name to listing.
-
-* Ende.                                                   "PBSW231003
-
-  perform datum_und_uhrzeit_aufbereiten.
-
-  perform  header_und_ausgabelaenge using '  '.
-
- 
-
- 
-
-* Form 1 Start: Erzeugung der gefüllten Zeile (XKUN)
-
-  append 'FORM genXTABLine USING XTABLine LIKE XTAB  OutLine.'
-
-                                                       to listing.
-
-  append '  DATA Cl LIKE XTAB. ' to listing.
-
-  append '  CLEAR Cl.' to listing.
-
-  append '  MOVE-CORRESPONDING Cl TO TGeneratedHeaderType.' to listing.
-
- 
-
-  perform anonymous_externals_xtab.                         "PBSW250719
-
- 
-
-  append '  MOVE-CORRESPONDING XTABLine TO TGeneratedHeaderType.'
-
-                  to listing.
-
-  perform  datum_uhrzeit_uebernehmen.
-
-  perform  abschliessen_und_generieren.
-
- 
 
 endform.
 
@@ -6128,36 +6225,6 @@ form abschliessen_und_generieren.
 
   perform append_listing.
 
-  BREAK-POINT.
-
-  generate subroutine pool listing name generatedprog line errorline
-
-                                                   message errormessage.
-
-  if sy-subrc <> 0.
-
-* Programm konnte nicht generiert werden
-
-*   MESSAGE E600 WITH TEXT-017.                            "PBSW151104
-
- 
-
-** Anfang                                                   "PBSW100408
-
-    message i600(fr) with errormessage+000(50)
-
-                          errormessage+050(50)
-
-                          errormessage+100(50)
-
-                          errormessage+150(50).
-
-* Ende                                                     "PBSW100408                                                    "PBSW100408
-
-    message e600(fr) with text-017.                         "PBSW151104
-
-  endif.
-
 endform.
 
  
@@ -6174,34 +6241,6 @@ form abschl_und_gen_vbpa.
 
   perform append_listing.
 
-  generate subroutine pool listing name generatedprog_vbpa
-
-  line errorline message errormessage.
-
-  if sy-subrc <> 0.
-
-* Programm konnte nicht generiert werden
-
-*   MESSAGE E600 WITH TEXT-017.                           "PBSW151104
-
-* Anfang                                                   "PBSW100408
-
-    message i600(fr) with errormessage+000(50)
-
-                          errormessage+050(50)
-
-                          errormessage+100(50)
-
-                          errormessage+150(50).
-
-* Ende                                                     "PBSW100408
-
- 
-
-    message e600(fr) with text-017.                         "PBSW151104
-
-  endif.
-
 endform.
 
  
@@ -6217,32 +6256,6 @@ endform.
 form abschl_und_gen_konv.
 
   perform append_listing.
-
-  generate subroutine pool listing name generatedprog_konv
-
-  line errorline message errormessage.
-
-  if sy-subrc <> 0.
-
-* Programm konnte nicht generiert werden
-
-*   MESSAGE E600 WITH TEXT-017.                           "PBSW151104
-
-* Anfang                                                  "PBSW100408
-
-    message i600(fr) with errormessage+000(50)
-
-                          errormessage+050(50)
-
-                          errormessage+100(50)
-
-                          errormessage+150(50).
-
-* Ende                                                    "PBSW100408
-
-    message e600(fr) with text-017.                         "PBSW151104
-
-  endif.
 
 endform.
 
@@ -8006,18 +8019,6 @@ form abschl_und_gen_afvc.
 
   perform append_listing.
 
-  generate subroutine pool listing name generatedprog_afvc
-
-  line errorline message errormessage.
-
-  if sy-subrc <> 0.
-
-* Programm konnte nicht generiert werden
-
-    message e600(fr) with text-017.
-
-  endif.
-
 endform.
 
  
@@ -9314,39 +9315,11 @@ endform.                    " GENERATEEXTERNALS_ITEM_BSET
 
 *&---------------------------------------------------------------------*
 
-form abschl_und_gen_bset .
+form abschl_und_gen_bset.
 
   perform append_listing.
 
-  generate subroutine pool listing name generatedprog_bset
-
-      line errorline message errormessage.
-
-  if sy-subrc <> 0.
-
-* Programm konnte nicht generiert werden
-
-*   MESSAGE E600 WITH TEXT-017.                           "PBSW151104
-
-* Anfang                                                   "PBSW100408
-
-    message i600(fr) with errormessage+000(50)
-
-                          errormessage+050(50)
-
-                          errormessage+100(50)
-
-                          errormessage+150(50).
-
-* Ende                                                     "PBSW100408
-
- 
-
-    message e600(fr) with text-017.                         "PBSW151104
-
-  endif.
-
-endform.                    " ABSCHL_UND_GEN_BSET
+endform.
 
 * Ende PBSC030810
 
@@ -10784,7 +10757,7 @@ IF EXP = 'X'.
 
    PERFORM WRITEOUTPUTHEADER USING FIELDLIST[] '  '.
 
-   PERFORM SET_CORRECT_TAB_VALUE IN PROGRAM (GENERATEDPROG).
+   PERFORM SET_CORRECT_TAB_VALUE.
 
  
 
@@ -11518,7 +11491,7 @@ ELSE.
 
  
 
-    PERFORM GENXTABLINE IN PROGRAM (GENERATEDPROG) USING XTAB OUTLINE.
+    PERFORM GENXTABLINE USING XTAB OUTLINE.
 
     PERFORM APPENDEXPORTFILE USING OUTLINE.
 
